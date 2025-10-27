@@ -1,0 +1,420 @@
+﻿@page "/"
+@using OpenQA.Selenium.Chrome
+@using OpenQA.Selenium.Support.UI
+@using PatreonWebScraper.Models
+@using System.Text.Json
+@using OpenQA.Selenium;
+@using SeleniumExtras.WaitHelpers;
+@using System.Net
+@inject IJSRuntime JS
+
+<PageTitle>Home</PageTitle>
+
+<h1>Patreon Web Scraper</h1>
+
+@* <div class="mb-3">
+    <label>Patreon Login Cookie (paste entire cookie header)</label>
+    <textarea class="form-control" rows='3' @bind="Settings.LoginCookie" placeholder='session_id=...;stream_user_token={...};'></textarea>
+</div>
+or
+<div class="mb-3 form-row">
+    <div class="col">
+        <label>email</label>
+        <input class="form-control" @bind="Settings.Email" />
+    </div>
+    <div class="col">
+        <label>password</label>
+        <input class="form-control" type="password" @bind="PasswordInput" />
+    </div>
+</div> *@
+<div class="mb-3">
+    <label>URL to scrape: (Ex: https://www.patreon.com/cw/thunderxflp/posts)</label>
+    <input class="form-control" @bind="Settings.TargetUrl" placeholder="https://www.patreon.com/cw/thunderxflp/posts" />
+</div>
+<div class="mb-3">
+    <label>Output Path</label>
+    <input type='text' class="form-control" @bind="Settings.OutputPath" />
+</div>
+<div class="mb-3">
+    <label>Delay (ms)</label>
+    <input type='number' class="form-control" @bind="Settings.Delay" placeholder="100" />
+</div>
+<div class="mb-3">
+    <div class="checkbox-container">
+        <input id="chkHeadlessMode" type="checkbox" @bind="Settings.HeadlessMode" />
+        <label for="chkHeadlessMode">Headless Mode</label>
+    </div>
+    <div class="checkbox-container">
+        <input id="chkOverwrite" type='checkbox' @bind="Settings.Overwrite" />
+        <label for="chkOverwrite">Overwrite existing files</label>
+    </div>
+</div>
+
+<button class="btn btn-primary" @onclick="SaveSettings" disabled="@IsRunning">Save Settings</button>
+
+<button class="btn btn-primary" @onclick="RunScraper" disabled="@IsRunning">
+    @ButtonText
+</button>
+
+<br />
+<br />
+
+<p>@StatusMessage</p>
+<p>@StatusCount</p>
+
+@if (ScrapedData.Any())
+{
+    <ul>
+        @foreach (var item in ScrapedData)
+        {
+            <li>@item</li>
+        }
+    </ul>
+}
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/nprogress/0.2.0/nprogress.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/nprogress/0.2.0/nprogress.min.js"></script>
+<script src="js/progress.js"></script>
+
+@code {
+    // User inputs
+    private Settings Settings { get; set; } = new();
+    private string PasswordInput { get; set; } = string.Empty;
+
+    private bool IsRunning = false;
+    private string StatusMessage = "Status...";
+    private string StatusCount = "";
+    private string ButtonText => IsRunning ? "Scraping..." : "Start Scraper";
+    private List<string> ScrapedData = new();
+
+    protected override void OnInitialized()
+    {
+        // Read file and prepopulate text boxes
+        var settingsFile = Path.Combine(AppContext.BaseDirectory, "settings.json");
+        if (File.Exists(settingsFile))
+        {
+            var json = File.ReadAllText(settingsFile);
+            Settings = JsonSerializer.Deserialize<Settings>(json) ?? new Settings();
+
+            if (!String.IsNullOrEmpty(Settings.Password))
+                PasswordInput = "********";
+        }
+    }
+
+    // TODO: Could click through all the Load More buttons first, then get all the posts to get an accurate count so we can show an accurate loading bar
+    //       But then we would have to carefully scroll through each post
+
+    // TODO: Could make the downloading and creation of files multithreaded and non blocking to improve efficiency
+    private async Task RunScraper()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("NProgress.start");
+
+            IsRunning = true;
+            StatusMessage = "Starting scraper...";
+            StatusCount = "";
+            StateHasChanged();
+            ScrapedData.Clear();
+
+            var progress = new Progress<(string Title, string StatusMessage)>(item =>
+            {
+                if (!string.IsNullOrWhiteSpace(item.Title) && !ScrapedData.Contains(item.Title))
+                    ScrapedData.Add(item.Title);
+
+                StatusMessage = $"{item.StatusMessage}";
+                StatusCount = $"Scraped {ScrapedData.Count} items...";
+
+                StateHasChanged(); // Update UI
+            });
+
+            await Task.Run(async () =>
+            {
+                var options = new ChromeOptions();
+                if (Settings.HeadlessMode)
+                    options.AddArgument("--headless"); // run Chrome in background
+
+                options.AddArgument("--no-sandbox");
+                options.AddArgument("--disable-gpu");
+                using var driver = new ChromeDriver(options);
+
+                driver.Navigate().GoToUrl("https://www.patreon.com/login");
+
+                // Assume driver is already initialized
+                var waitForLogin = new WebDriverWait(driver, TimeSpan.FromMinutes(5)); // Wait up to 5 minutes
+
+                string script = @"
+(function() {
+    // Create a div for the notification
+    var notification = document.createElement('div');
+    notification.id = 'selenium-login-notification';
+    notification.innerText = 'Waiting for you to login...';
+
+    // Style it
+    notification.style.position = 'fixed';
+    notification.style.top = '0';
+    notification.style.left = '0';
+    notification.style.width = '100%';
+    notification.style.backgroundColor = '#ffcc00';
+    notification.style.color = '#000';
+    notification.style.textAlign = 'center';
+    notification.style.fontSize = '18px';
+    notification.style.padding = '10px 0';
+    notification.style.zIndex = '9999';
+    notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+
+    // Add to the document
+    document.body.appendChild(notification);
+
+    // Remove after 5 minutes (300,000 ms)
+    setTimeout(function() {
+        notification.remove();
+    }, 300000);
+})();
+";
+
+                ((IJavaScriptExecutor)driver).ExecuteScript(script);
+
+                // Wait until the URL contains /home (after login)
+                waitForLogin.Until(d => d.Url.Contains("/home"));
+
+                await Task.Delay(1000);
+
+                // if (PasswordInput == "********")
+                //     CryptoHelper.Decrypt(Settings.Password);
+                // else
+                //     _ = PasswordInput;
+
+                // AddCookies(Settings.LoginCookie, driver);
+                driver.Navigate().GoToUrl(Settings.TargetUrl); // Replace with your target URL
+
+                var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(20));
+
+                // Wait until at least one post container exists
+                wait.Until(ExpectedConditions.ElementExists(By.CssSelector("div[data-tag='post-card']")));
+
+                if (Settings.Delay > 0)
+                    await Task.Delay(Settings.Delay);
+
+                // using var client = new HttpClient();
+                // client.DefaultRequestHeaders.Add("Cookie", Settings.LoginCookie);
+                // client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+
+                // Get cookies from Selenium
+                var seleniumCookies = driver.Manage().Cookies.AllCookies;
+
+                // Create a cookie container
+                var cookieContainer = new CookieContainer();
+                foreach (var c in seleniumCookies)
+                {
+                    cookieContainer.Add(new System.Net.Cookie(c.Name, Uri.EscapeDataString(c.Value), "/", "patreon.com"));
+                }
+
+                // Create HttpClient with the cookies
+                var handler = new HttpClientHandler { CookieContainer = cookieContainer, AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate };
+                using var client = new HttpClient(handler);
+
+                var count = 0;
+                var i = 0;
+                while (true)
+                {
+                    var retry = 0; // retry 3 times
+                    var previousTitle = ""; // for debugging
+                    var elements = driver.FindElements(By.CssSelector("div[data-tag='post-card']"));
+                    for (; i < elements.Count; i++)
+                    {
+                        try
+                        {
+                            // Refetch the element so it's current
+                            var el = driver.FindElements(By.CssSelector("div[data-tag='post-card']"))[i];
+
+                            // Have to keep the elements in view due to virtualization
+                            ((IJavaScriptExecutor)driver).ExecuteScript("arguments[0].scrollIntoView(true);", el);
+                            await Task.Delay(300);
+
+                            var title = el.FindElement(By.CssSelector("span[data-tag='post-title'], span[data-tag='post-title'] a"));
+
+                            ((IProgress<(string, string)>)progress).Report((title.Text, $"({i}/{elements.Count}) {title.Text}"));
+
+                            IWebElement datePosted;
+                            var datePostedList = el.FindElements(By.CssSelector("a[data-tag='post-published-at']"));
+                            if (datePostedList.Count == 0)
+                                datePosted = el.FindElement(By.CssSelector("#track-click"));
+                            else
+                                datePosted = datePostedList[0];
+
+                            var postBody = el.FindElement(By.CssSelector("[id^=':'][id$=':']"));
+                            var attachments = el.FindElements(By.CssSelector("div[data-tag='post-attachments'] a[data-tag='post-attachment-link']"));
+
+                            string safeFolderName = string.Join("_", title.Text.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+
+                            if (!Directory.Exists(Path.Combine(Settings.OutputPath, safeFolderName)))
+                                Directory.CreateDirectory(Path.Combine(Settings.OutputPath, safeFolderName));
+
+                            foreach (var attachment in attachments)
+                            {
+                                if (File.Exists(Path.Combine(Settings.OutputPath, safeFolderName, attachment.Text)))
+                                {
+                                    ((IProgress<(string, string)>)progress).Report((title.Text, $"({i}/{elements.Count}) Skipped attachment {attachment.Text} for {title.Text}"));
+                                    continue;
+                                }
+
+                                var url = attachment.GetAttribute("href");
+                                var response = await client.GetAsync(url);
+                                response.EnsureSuccessStatusCode();
+
+                                var bytes = await response.Content.ReadAsByteArrayAsync();
+                                await File.WriteAllBytesAsync(Path.Combine(Settings.OutputPath, safeFolderName, attachment.Text), bytes);
+                            }
+
+                            await File.WriteAllTextAsync(Path.Combine(Settings.OutputPath, safeFolderName, "Notes.md"),
+    $@"{title.Text}
+
+{datePosted.Text}
+
+{postBody.Text}");
+
+                            previousTitle = title.Text;
+                            await JS.InvokeVoidAsync("NProgress.inc");
+                        }
+                        catch (StaleElementReferenceException ex)
+                        {
+                            if (retry > 3)
+                                throw ex;
+
+                            retry++;
+                            i--;
+
+                            await Task.Delay(300);
+                        }
+                        catch (NoSuchElementException ex)
+                        {
+                            if (retry > 3)
+                                throw ex;
+
+                            retry++;
+                            i--;
+
+                            await Task.Delay(300);
+                        }
+                        catch (Exception ex)
+                        {
+                            if (retry > 3)
+                                throw ex;
+
+                            retry++;
+                            i--;
+
+                            await Task.Delay(300);
+                        }
+                    }
+
+                    #region Load More
+
+                    var loadMoreButtons = driver.FindElements(By.XPath("//button[normalize-space(.)='Load more']")).Where(btn => btn.Displayed).ToList<IWebElement>();
+                    if (loadMoreButtons.Count == 0)
+                        break;
+
+                    if (loadMoreButtons.Count > 1)
+                        throw new Exception("There is more than 1 Load more button");
+
+                    var loadMoreButton = loadMoreButtons[0];
+                    if (loadMoreButton == null || !loadMoreButton.Displayed)
+                        break;
+
+                    var postsBefore = driver.FindElements(By.CssSelector("div[data-tag='post-card']")).Count;
+
+                    ((IProgress<(string, string)>)progress).Report(("", $"Loading More ({count})"));
+                    loadMoreButton.Click();
+
+                    wait.Until(d => d.FindElements(By.CssSelector("div[data-tag='post-card']")).Count > postsBefore);
+
+                    if (Settings.Delay > 0)
+                        await Task.Delay(Settings.Delay);
+
+                    #endregion
+                }
+
+                driver.Quit();
+            });
+
+            ((IProgress<(string, string)>)progress).Report(("", $"Scraping finished. {ScrapedData.Count} items found."));
+            IsRunning = false;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"There was an unexpected error: {ex.Message}";
+            StateHasChanged();
+        }
+        finally
+        {
+            await JS.InvokeVoidAsync("NProgress.done");
+            IsRunning = false;
+        }
+    }
+
+    private IEnumerable<(string Name, string Value)> ParseCookieHeader(string cookieHeader)
+    {
+        if (string.IsNullOrWhiteSpace(cookieHeader)) yield break;
+
+        var parts = cookieHeader.Split(';');
+        foreach (var p in parts)
+        {
+            var trimmed = p.Trim();
+            if (trimmed.Length == 0)
+                continue;
+
+            var eq = trimmed.IndexOf('=');
+            if (eq <= 0)
+                continue;
+
+            var name = trimmed.Substring(0, eq).Trim();
+            var value = trimmed.Substring(eq + 1).Trim();
+            if (!string.IsNullOrEmpty(name))
+                yield return (name, value);
+        }
+    }
+
+    private void AddCookies(string cookieHeader, ChromeDriver driver)
+    {
+        var parsedCookies = ParseCookieHeader(cookieHeader).ToList();
+        foreach (var (Name, Value) in parsedCookies)
+        {
+            // Selenium cookie requires domainless name/value and a domain when adding via Cookie object
+            // Use domain ".patreon.com" or "www.patreon.com"
+            var cookie = new OpenQA.Selenium.Cookie(
+                Name,
+                Value,
+                ".patreon.com", // domain - important for cross-subdomain cookies
+                "/",            // path
+                null            // expiry (null = session cookie)
+            );
+            try
+            {
+                driver.Manage().Cookies.AddCookie(cookie);
+            }
+            catch (Exception ex)
+            {
+                // log or handle single cookie error
+            }
+        }
+    }
+
+    private async Task SaveSettings()
+    {
+        try
+        {
+            Settings.Password = CryptoHelper.Encrypt(PasswordInput);
+
+            var settingsFile = Path.Combine(AppContext.BaseDirectory, "settings.json");
+            var json = JsonSerializer.Serialize(Settings, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(settingsFile, json);
+            StatusMessage = "Settings saved successfully!";
+            StatusCount = "";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Error saving settings: {ex.Message}";
+        }
+    }
+}
