@@ -8,9 +8,7 @@
 @using System.Net
 @inject IJSRuntime JS
 
-<PageTitle>Home</PageTitle>
-
-<h1>Patreon Web Scraper</h1>
+<PageTitle>Patreon Web Scraper</PageTitle>
 
 @* <div class="mb-3">
     <label>Patreon Login Cookie (paste entire cookie header)</label>
@@ -28,8 +26,8 @@ or
     </div>
 </div> *@
 <div class="mb-3">
-    <label>URL to scrape: (Ex: https://www.patreon.com/cw/thunderxflp/posts)</label>
-    <input class="form-control" @bind="Settings.TargetUrl" placeholder="https://www.patreon.com/cw/thunderxflp/posts" />
+    <label>URL to scrape: (Ex: https://www.patreon.com/cw/creator1/posts)</label>
+    <input class="form-control" @bind="Settings.TargetUrl" placeholder="https://www.patreon.com/cw/creator1/posts" />
 </div>
 <div class="mb-3">
     <label>Output Path</label>
@@ -40,8 +38,10 @@ or
     <input type='number' class="form-control" @bind="Settings.Delay" placeholder="100" />
 </div>
 <div class="mb-3">
-    <div class="checkbox-container">
-        <input id="chkHeadlessMode" type="checkbox" @bind="Settings.HeadlessMode" />
+    <div class="checkbox-container" title="Headless Mode is not applicable until auto login is implemented">
+        @* Headless Mode is not applicable until auto login is implemented, either by username & password or a login cookie. 
+        However, the login cookie appears to be flimsy *@
+        <input id="chkHeadlessMode" type="checkbox" @bind="Settings.HeadlessMode" disabled="disabled" />
         <label for="chkHeadlessMode">Headless Mode</label>
     </div>
     <div class="checkbox-container">
@@ -59,18 +59,24 @@ or
 <br />
 <br />
 
-<p>@StatusMessage</p>
-<p>@StatusCount</p>
+<div style="
+    background-color: lightyellow;
+    border: 1px solid darkgray;
+    padding: 4px 10px;
+">
+    <p>@StatusMessage</p>
+    <p>@StatusCount</p>
 
-@if (ScrapedData.Any())
-{
-    <ul>
-        @foreach (var item in ScrapedData)
-        {
-            <li>@item</li>
-        }
-    </ul>
-}
+    @if (ScrapedData.Any())
+    {
+        <ul>
+            @foreach (var item in ScrapedData)
+            {
+                <li>@item</li>
+            }
+        </ul>
+    }
+</div>
 
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/nprogress/0.2.0/nprogress.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/nprogress/0.2.0/nprogress.min.js"></script>
@@ -185,7 +191,6 @@ or
                 // else
                 //     _ = PasswordInput;
 
-                // AddCookies(Settings.LoginCookie, driver);
                 driver.Navigate().GoToUrl(Settings.TargetUrl); // Replace with your target URL
 
                 var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(20));
@@ -195,10 +200,6 @@ or
 
                 if (Settings.Delay > 0)
                     await Task.Delay(Settings.Delay);
-
-                // using var client = new HttpClient();
-                // client.DefaultRequestHeaders.Add("Cookie", Settings.LoginCookie);
-                // client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
 
                 // Get cookies from Selenium
                 var seleniumCookies = driver.Manage().Cookies.AllCookies;
@@ -350,53 +351,6 @@ or
         {
             await JS.InvokeVoidAsync("NProgress.done");
             IsRunning = false;
-        }
-    }
-
-    private IEnumerable<(string Name, string Value)> ParseCookieHeader(string cookieHeader)
-    {
-        if (string.IsNullOrWhiteSpace(cookieHeader)) yield break;
-
-        var parts = cookieHeader.Split(';');
-        foreach (var p in parts)
-        {
-            var trimmed = p.Trim();
-            if (trimmed.Length == 0)
-                continue;
-
-            var eq = trimmed.IndexOf('=');
-            if (eq <= 0)
-                continue;
-
-            var name = trimmed.Substring(0, eq).Trim();
-            var value = trimmed.Substring(eq + 1).Trim();
-            if (!string.IsNullOrEmpty(name))
-                yield return (name, value);
-        }
-    }
-
-    private void AddCookies(string cookieHeader, ChromeDriver driver)
-    {
-        var parsedCookies = ParseCookieHeader(cookieHeader).ToList();
-        foreach (var (Name, Value) in parsedCookies)
-        {
-            // Selenium cookie requires domainless name/value and a domain when adding via Cookie object
-            // Use domain ".patreon.com" or "www.patreon.com"
-            var cookie = new OpenQA.Selenium.Cookie(
-                Name,
-                Value,
-                ".patreon.com", // domain - important for cross-subdomain cookies
-                "/",            // path
-                null            // expiry (null = session cookie)
-            );
-            try
-            {
-                driver.Manage().Cookies.AddCookie(cookie);
-            }
-            catch (Exception ex)
-            {
-                // log or handle single cookie error
-            }
         }
     }
 

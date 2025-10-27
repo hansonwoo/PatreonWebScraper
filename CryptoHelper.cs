@@ -4,7 +4,7 @@ using System.Text;
 public class CryptoHelper
 {
     // TODO:
-    private static readonly byte[] Key = Encoding.UTF8.GetBytes("Your32ByteLongEncryptionKeyHere!"); // Must be 32 bytes for AES-256
+    private static readonly byte[] Key = Encoding.UTF8.GetBytes("Your32ByteLongEncryptionKeyHere!");
 
     // Encrypt a string and return the result as base64
     public static string Encrypt(string plainText)

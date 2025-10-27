@@ -66,3 +66,11 @@ h1:focus {
         cursor: pointer;
         padding-left: 4px;
     }
+
+    .checkbox-container input:disabled {
+        cursor: not-allowed;
+    }
+
+    .checkbox-container input:disabled + label {
+        cursor: not-allowed;
+    }
